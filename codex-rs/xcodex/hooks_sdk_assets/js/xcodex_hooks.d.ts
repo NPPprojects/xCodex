@@ -15,6 +15,7 @@
  */
 
 export type HookPayload = {
+  approval_id?: null | string;
   approval_policy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
   attempt?: null | number;
   call_id?: null | string;

@@ -567,6 +567,8 @@ impl ExternalCommandHooksProvider {
             HookNotification::SubagentStop { .. } => &self.hooks.subagent_stop,
             HookNotification::ModelRequestStarted { .. } => &self.hooks.model_request_started,
             HookNotification::ModelResponseCompleted { .. } => &self.hooks.model_response_completed,
+            HookNotification::ModelManualApply { .. } => &self.hooks.model_manual_apply,
+            HookNotification::ModelTrainingMode { .. } => &self.hooks.model_training_mode,
             HookNotification::ToolCallStarted { .. } => &self.hooks.tool_call_started,
             HookNotification::ToolCallFinished { .. } => &self.hooks.tool_call_finished,
         }
@@ -780,6 +782,8 @@ enum HookEventKey {
     SubagentStop,
     ModelRequestStarted,
     ModelResponseCompleted,
+    ModelManualApply,
+    ModelTrainingMode,
     ToolCallStarted,
     ToolCallFinished,
 }
@@ -797,6 +801,8 @@ impl HookEventKey {
             HookNotification::SubagentStop { .. } => Self::SubagentStop,
             HookNotification::ModelRequestStarted { .. } => Self::ModelRequestStarted,
             HookNotification::ModelResponseCompleted { .. } => Self::ModelResponseCompleted,
+            HookNotification::ModelManualApply { .. } => Self::ModelManualApply,
+            HookNotification::ModelTrainingMode { .. } => Self::ModelTrainingMode,
             HookNotification::ToolCallStarted { .. } => Self::ToolCallStarted,
             HookNotification::ToolCallFinished { .. } => Self::ToolCallFinished,
         }
@@ -823,6 +829,8 @@ fn canonical_event_key(name: &str) -> Option<HookEventKey> {
         "subagent_stop" => Some(HookEventKey::SubagentStop),
         "model_request_started" => Some(HookEventKey::ModelRequestStarted),
         "model_response_completed" => Some(HookEventKey::ModelResponseCompleted),
+        "model_manual_apply" => Some(HookEventKey::ModelManualApply),
+        "model_training_mode" => Some(HookEventKey::ModelTrainingMode),
         "tool_call_started" => Some(HookEventKey::ToolCallStarted),
         "tool_call_finished" => Some(HookEventKey::ToolCallFinished),
 
@@ -835,6 +843,8 @@ fn canonical_event_key(name: &str) -> Option<HookEventKey> {
         "pre-compact" => Some(HookEventKey::PreCompact),
         "model-request-started" => Some(HookEventKey::ModelRequestStarted),
         "model-response-completed" => Some(HookEventKey::ModelResponseCompleted),
+        "model-manual-apply" => Some(HookEventKey::ModelManualApply),
+        "model-training-mode" => Some(HookEventKey::ModelTrainingMode),
         "tool-call-started" => Some(HookEventKey::ToolCallStarted),
         "tool-call-finished" => Some(HookEventKey::ToolCallFinished),
 
@@ -846,6 +856,8 @@ fn canonical_event_key(name: &str) -> Option<HookEventKey> {
         "Notification" => Some(HookEventKey::Notification),
         "Stop" => Some(HookEventKey::AgentTurnComplete),
         "SubagentStop" => Some(HookEventKey::SubagentStop),
+        "ModelManualApply" => Some(HookEventKey::ModelManualApply),
+        "ModelTrainingMode" => Some(HookEventKey::ModelTrainingMode),
         "PermissionRequest" => Some(HookEventKey::ApprovalRequested),
         "PreToolUse" => Some(HookEventKey::ToolCallStarted),
         "PostToolUse" => Some(HookEventKey::ToolCallFinished),
@@ -2052,6 +2064,44 @@ impl UserHooks {
         });
     }
 
+    pub(crate) fn model_manual_apply(
+        &self,
+        thread_id: String,
+        turn_id: Option<String>,
+        cwd: String,
+        approval_id: String,
+        reason: Option<String>,
+        paths: Vec<String>,
+    ) {
+        self.bus.emit(HookNotification::ModelManualApply {
+            thread_id,
+            turn_id,
+            cwd,
+            approval_id,
+            reason: self.sanitize_opt_text(reason),
+            paths: self.sanitize_vec_text(paths),
+        });
+    }
+
+    pub(crate) fn model_training_mode(
+        &self,
+        thread_id: String,
+        turn_id: Option<String>,
+        cwd: String,
+        approval_id: String,
+        reason: Option<String>,
+        paths: Vec<String>,
+    ) {
+        self.bus.emit(HookNotification::ModelTrainingMode {
+            thread_id,
+            turn_id,
+            cwd,
+            approval_id,
+            reason: self.sanitize_opt_text(reason),
+            paths: self.sanitize_vec_text(paths),
+        });
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn tool_call_started(
         &self,
@@ -2599,6 +2649,8 @@ pub struct HookPayload {
     server_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    approval_id: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     model_request_id: Option<String>,
@@ -2655,7 +2707,9 @@ impl HookPayload {
             | HookNotification::UserPromptSubmit { thread_id, cwd, .. }
             | HookNotification::PreCompact { thread_id, cwd, .. }
             | HookNotification::Notification { thread_id, cwd, .. }
-            | HookNotification::SubagentStop { thread_id, cwd, .. } => {
+            | HookNotification::SubagentStop { thread_id, cwd, .. }
+            | HookNotification::ModelManualApply { thread_id, cwd, .. }
+            | HookNotification::ModelTrainingMode { thread_id, cwd, .. } => {
                 (thread_id.clone(), None, cwd.clone())
             }
             HookNotification::ModelRequestStarted {
@@ -2724,6 +2778,7 @@ impl HookPayload {
             grant_root: None,
             server_name: None,
             request_id: None,
+            approval_id: None,
             model_request_id: None,
             attempt: None,
             model: None,
@@ -2818,6 +2873,38 @@ impl HookPayload {
                 out.tool_name = Some("Task".to_string());
                 out.subagent = Some(subagent.clone());
                 out.status = Some(status.clone());
+            }
+            HookNotification::ModelManualApply {
+                approval_id,
+                reason,
+                paths,
+                ..
+            } => {
+                out.tool_name = Some("Edit".to_string());
+                out.approval_id = Some(approval_id.clone());
+                out.reason = reason.clone();
+                out.paths = Some(paths.clone());
+                out.tool_input = Some(serde_json::json!({
+                    "approval_id": approval_id,
+                    "paths": paths,
+                }));
+                out.tool_response = Some(Value::Null);
+            }
+            HookNotification::ModelTrainingMode {
+                approval_id,
+                reason,
+                paths,
+                ..
+            } => {
+                out.tool_name = Some("Edit".to_string());
+                out.approval_id = Some(approval_id.clone());
+                out.reason = reason.clone();
+                out.paths = Some(paths.clone());
+                out.tool_input = Some(serde_json::json!({
+                    "approval_id": approval_id,
+                    "paths": paths,
+                }));
+                out.tool_response = Some(Value::Null);
             }
             HookNotification::ModelRequestStarted {
                 model_request_id,
@@ -3138,6 +3225,30 @@ pub enum HookNotification {
     },
 
     #[serde(rename_all = "kebab-case")]
+    ModelManualApply {
+        thread_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        cwd: String,
+        approval_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        paths: Vec<String>,
+    },
+
+    #[serde(rename_all = "kebab-case")]
+    ModelTrainingMode {
+        thread_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
+        cwd: String,
+        approval_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        paths: Vec<String>,
+    },
+
+    #[serde(rename_all = "kebab-case")]
     ToolCallStarted {
         thread_id: String,
         turn_id: String,
@@ -3187,6 +3298,8 @@ impl HookNotification {
             Self::SubagentStop { .. } => "subagent-stop",
             Self::ModelRequestStarted { .. } => "model-request-started",
             Self::ModelResponseCompleted { .. } => "model-response-completed",
+            Self::ModelManualApply { .. } => "model-manual-apply",
+            Self::ModelTrainingMode { .. } => "model-training-mode",
             Self::ToolCallStarted { .. } => "tool-call-started",
             Self::ToolCallFinished { .. } => "tool-call-finished",
         }
@@ -3217,6 +3330,8 @@ pub(crate) mod hooks_test {
         SubagentStop,
         ModelRequestStarted,
         ModelResponseCompleted,
+        ModelManualApply,
+        ModelTrainingMode,
         ToolCallStarted,
         ToolCallFinished,
     }
@@ -3324,6 +3439,8 @@ pub(crate) mod hooks_test {
                 HooksTestEvent::SubagentStop,
                 HooksTestEvent::ModelRequestStarted,
                 HooksTestEvent::ModelResponseCompleted,
+                HooksTestEvent::ModelManualApply,
+                HooksTestEvent::ModelTrainingMode,
                 HooksTestEvent::ToolCallStarted,
                 HooksTestEvent::ToolCallFinished,
                 HooksTestEvent::AgentTurnComplete,
@@ -3431,6 +3548,24 @@ pub(crate) mod hooks_test {
                 .collect(),
             HooksTestEvent::ModelResponseCompleted => hooks
                 .model_response_completed
+                .iter()
+                .cloned()
+                .map(|command| HooksTestCommand {
+                    command,
+                    hook_event_name: hook_event_name.clone(),
+                })
+                .collect(),
+            HooksTestEvent::ModelManualApply => hooks
+                .model_manual_apply
+                .iter()
+                .cloned()
+                .map(|command| HooksTestCommand {
+                    command,
+                    hook_event_name: hook_event_name.clone(),
+                })
+                .collect(),
+            HooksTestEvent::ModelTrainingMode => hooks
+                .model_training_mode
                 .iter()
                 .cloned()
                 .map(|command| HooksTestCommand {
@@ -3602,6 +3737,22 @@ pub(crate) mod hooks_test {
                 token_usage: None,
                 needs_follow_up: false,
             },
+            HooksTestEvent::ModelManualApply => HookNotification::ModelManualApply {
+                thread_id,
+                turn_id: Some(turn_id),
+                cwd,
+                approval_id: format!("approval-{}", Uuid::new_v4()),
+                reason: Some("hooks test".to_string()),
+                paths: vec!["/tmp/hooks-test.txt".to_string()],
+            },
+            HooksTestEvent::ModelTrainingMode => HookNotification::ModelTrainingMode {
+                thread_id,
+                turn_id: Some(turn_id),
+                cwd,
+                approval_id: format!("approval-{}", Uuid::new_v4()),
+                reason: Some("hooks test".to_string()),
+                paths: vec!["/tmp/hooks-test.txt".to_string()],
+            },
             HooksTestEvent::ToolCallStarted => HookNotification::ToolCallStarted {
                 thread_id,
                 turn_id,
@@ -3727,6 +3878,60 @@ mod tests {
             serialized.contains(r#""timestamp":"#),
             "payload must include timestamp: {serialized}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn model_manual_apply_payload_contains_expected_fields() -> Result<()> {
+        let payload = HookPayload::new(
+            HookNotification::ModelManualApply {
+                thread_id: "thread-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                cwd: "/tmp/project".to_string(),
+                approval_id: "approval-1".to_string(),
+                reason: Some("manual apply selected".to_string()),
+                paths: vec!["/tmp/project/file.rs".to_string()],
+            },
+            "ModelManualApply",
+        );
+
+        assert_eq!(payload.hook_event_name, "ModelManualApply".to_string());
+        assert_eq!(payload.xcodex_event_type, "model-manual-apply".to_string());
+        assert_eq!(payload.approval_id, Some("approval-1".to_string()));
+        assert_eq!(payload.reason, Some("manual apply selected".to_string()));
+        assert_eq!(
+            payload.paths,
+            Some(vec!["/tmp/project/file.rs".to_string()])
+        );
+        assert_eq!(payload.tool_name, Some("Edit".to_string()));
+
+        Ok(())
+    }
+
+    #[test]
+    fn model_training_mode_payload_contains_expected_fields() -> Result<()> {
+        let payload = HookPayload::new(
+            HookNotification::ModelTrainingMode {
+                thread_id: "thread-1".to_string(),
+                turn_id: Some("turn-1".to_string()),
+                cwd: "/tmp/project".to_string(),
+                approval_id: "approval-2".to_string(),
+                reason: Some("training mode selected".to_string()),
+                paths: vec!["/tmp/project/file.rs".to_string()],
+            },
+            "ModelTrainingMode",
+        );
+
+        assert_eq!(payload.hook_event_name, "ModelTrainingMode".to_string());
+        assert_eq!(payload.xcodex_event_type, "model-training-mode".to_string());
+        assert_eq!(payload.approval_id, Some("approval-2".to_string()));
+        assert_eq!(payload.reason, Some("training mode selected".to_string()));
+        assert_eq!(
+            payload.paths,
+            Some(vec!["/tmp/project/file.rs".to_string()])
+        );
+        assert_eq!(payload.tool_name, Some("Edit".to_string()));
+
         Ok(())
     }
 
@@ -4259,6 +4464,8 @@ done
             hooks_test::HooksTestEvent::SubagentStop,
             hooks_test::HooksTestEvent::ModelRequestStarted,
             hooks_test::HooksTestEvent::ModelResponseCompleted,
+            hooks_test::HooksTestEvent::ModelManualApply,
+            hooks_test::HooksTestEvent::ModelTrainingMode,
             hooks_test::HooksTestEvent::ToolCallStarted,
             hooks_test::HooksTestEvent::ToolCallFinished,
             hooks_test::HooksTestEvent::AgentTurnComplete,

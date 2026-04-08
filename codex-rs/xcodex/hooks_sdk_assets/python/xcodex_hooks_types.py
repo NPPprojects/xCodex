@@ -34,6 +34,7 @@ else:
 HookPayload = TypedDict(
     "HookPayload",
     {
+        "approval_id": NotRequired[Union[None, str]],
         "approval_policy": NotRequired[Union[None, Union[Literal["never"], Literal["on-failure"], Literal["on-request"], Literal["untrusted"]]]],
         "attempt": NotRequired[Union[None, int]],
         "call_id": NotRequired[Union[None, str]],

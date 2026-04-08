@@ -15,6 +15,8 @@ pub type ExtraFields = BTreeMap<String, Value>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HookPayload {
+    #[serde(rename = "approval_id")]
+    pub approval_id: Option<String>,
     #[serde(rename = "approval_policy")]
     pub approval_policy: Option<Value>,
     #[serde(rename = "attempt")]

@@ -827,6 +827,17 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "model_manual_apply": {
+          "default": [],
+          "description": "Hooks invoked when the user chooses the manual-apply patch approval path.",
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
         "model_request_started": {
           "default": [],
           "description": "Hooks invoked immediately before issuing a model request.",
@@ -841,6 +852,17 @@
         "model_response_completed": {
           "default": [],
           "description": "Hooks invoked after a model response has completed.",
+          "items": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "model_training_mode": {
+          "default": [],
+          "description": "Hooks invoked when the user chooses the training-mode patch approval path.",
           "items": {
             "items": {
               "type": "string"
@@ -2415,8 +2437,10 @@
         "inproc_tool_call_summary": false,
         "keep_last_n_payloads": 50,
         "max_stdin_payload_bytes": 16384,
+        "model_manual_apply": [],
         "model_request_started": [],
         "model_response_completed": [],
+        "model_training_mode": [],
         "notification": [],
         "pre_compact": [],
         "pyo3": {

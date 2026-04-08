@@ -28,6 +28,8 @@ pub(crate) fn default_hook_event_name(notification: &HookNotification) -> Option
         HookNotification::PreCompact { .. } => Some("PreCompact"),
         HookNotification::Notification { .. } => Some("Notification"),
         HookNotification::SubagentStop { .. } => Some("SubagentStop"),
+        HookNotification::ModelManualApply { .. } => Some("ModelManualApply"),
+        HookNotification::ModelTrainingMode { .. } => Some("ModelTrainingMode"),
         HookNotification::AgentTurnComplete { .. } => Some("Stop"),
         HookNotification::ApprovalRequested { .. } => Some("PermissionRequest"),
         HookNotification::ToolCallStarted { .. } => Some("PreToolUse"),

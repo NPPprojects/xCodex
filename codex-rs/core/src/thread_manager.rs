@@ -276,6 +276,50 @@ impl ThreadManager {
         self.state.get_thread(thread_id).await
     }
 
+    pub async fn emit_model_manual_apply(
+        &self,
+        thread_id: ThreadId,
+        turn_id: Option<String>,
+        cwd: String,
+        approval_id: String,
+        reason: Option<String>,
+        paths: Vec<String>,
+    ) -> CodexResult<()> {
+        let thread_id_string = thread_id.to_string();
+        let thread = self.state.get_thread(thread_id).await?;
+        thread.user_hooks().model_manual_apply(
+            thread_id_string,
+            turn_id,
+            cwd,
+            approval_id,
+            reason,
+            paths,
+        );
+        Ok(())
+    }
+
+    pub async fn emit_model_training_mode(
+        &self,
+        thread_id: ThreadId,
+        turn_id: Option<String>,
+        cwd: String,
+        approval_id: String,
+        reason: Option<String>,
+        paths: Vec<String>,
+    ) -> CodexResult<()> {
+        let thread_id_string = thread_id.to_string();
+        let thread = self.state.get_thread(thread_id).await?;
+        thread.user_hooks().model_training_mode(
+            thread_id_string,
+            turn_id,
+            cwd,
+            approval_id,
+            reason,
+            paths,
+        );
+        Ok(())
+    }
+
     pub async fn start_thread(&self, config: Config) -> CodexResult<NewThread> {
         self.start_thread_with_tools(config, Vec::new(), false)
             .await

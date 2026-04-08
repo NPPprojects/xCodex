@@ -93,6 +93,7 @@ class HookPayload:
     timestamp: str
     transcript_path: str
     xcodex_event_type: str
+    approval_id: Optional[Any] = None
     approval_policy: Optional[Any] = None
     attempt: Optional[Any] = None
     call_id: Optional[Any] = None
@@ -143,6 +144,7 @@ class HookPayload:
 def parse_hook_payload(payload: Mapping[str, Any]) -> HookPayload:
     raw = dict(payload)
     known = {
+        "approval_id",
         "approval_policy",
         "attempt",
         "call_id",
@@ -197,6 +199,7 @@ def parse_hook_payload(payload: Mapping[str, Any]) -> HookPayload:
     extras = {k: v for (k, v) in raw.items() if k not in known}
 
     return HookPayload(
+        approval_id=lambda x: x(raw.get("approval_id")),
         approval_policy=lambda x: x(raw.get("approval_policy")),
         attempt=lambda x: x(raw.get("attempt")),
         call_id=lambda x: x(raw.get("call_id")),

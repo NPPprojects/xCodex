@@ -6,6 +6,7 @@ use crate::features::Feature;
 use crate::protocol::Event;
 use crate::protocol::Op;
 use crate::protocol::Submission;
+use crate::xcodex::hooks::UserHooks;
 use codex_protocol::config_types::Personality;
 use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::protocol::AskForApproval;
@@ -71,6 +72,10 @@ impl CodexThread {
 
     pub(crate) fn subscribe_status(&self) -> watch::Receiver<AgentStatus> {
         self.codex.agent_status.clone()
+    }
+
+    pub(crate) fn user_hooks(&self) -> &UserHooks {
+        self.codex.session.user_hooks()
     }
 
     pub fn rollout_path(&self) -> Option<PathBuf> {

@@ -3633,6 +3633,26 @@ impl App {
         tui: &mut tui::Tui,
         request: ManualPatchApplyRequest,
     ) {
+        let paths: Vec<String> = request
+            .changes
+            .keys()
+            .map(|path| path.display().to_string())
+            .collect();
+        if let Some(thread_id) = self.chat_widget.thread_id()
+            && let Err(err) = self
+                .server
+                .emit_model_manual_apply(
+                    thread_id,
+                    request.turn_id.clone(),
+                    request.cwd.display().to_string(),
+                    request.approval_id.clone(),
+                    request.reason.clone(),
+                    paths,
+                )
+                .await
+        {
+            tracing::warn!("failed to emit model-manual-apply hook: {err}");
+        }
         let approval_id = request.approval_id.clone();
         let payload = Self::manual_patch_apply_payload(&request, self.chat_widget.thread_id());
         let payload_path = match Self::write_manual_patch_apply_payload(&payload) {
@@ -3749,6 +3769,26 @@ impl App {
         tui: &mut tui::Tui,
         request: TrainingModeRequest,
     ) {
+        let paths: Vec<String> = request
+            .changes
+            .keys()
+            .map(|path| path.display().to_string())
+            .collect();
+        if let Some(thread_id) = self.chat_widget.thread_id()
+            && let Err(err) = self
+                .server
+                .emit_model_training_mode(
+                    thread_id,
+                    request.turn_id.clone(),
+                    request.cwd.display().to_string(),
+                    request.approval_id.clone(),
+                    request.reason.clone(),
+                    paths,
+                )
+                .await
+        {
+            tracing::warn!("failed to emit model-training-mode hook: {err}");
+        }
         let approval_id = request.approval_id.clone();
         let training = match self.generate_training_mode_artifact(&request).await {
             Ok(training) => training,

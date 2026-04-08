@@ -19,6 +19,7 @@ import (
 // Unknown fields are preserved in RawPayload for forward compatibility.
 type HookPayload struct {
 	RawPayload map[string]any `json:"-"`
+	ApprovalId *string `json:"approval_id"`
 	ApprovalPolicy any `json:"approval_policy"`
 	Attempt *int `json:"attempt"`
 	CallId *string `json:"call_id"`

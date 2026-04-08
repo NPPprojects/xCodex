@@ -1647,6 +1647,14 @@ pub struct HooksConfig {
     #[serde(default)]
     pub model_response_completed: Vec<Vec<String>>,
 
+    /// Hooks invoked when the user chooses the manual-apply patch approval path.
+    #[serde(default)]
+    pub model_manual_apply: Vec<Vec<String>>,
+
+    /// Hooks invoked when the user chooses the training-mode patch approval path.
+    #[serde(default)]
+    pub model_training_mode: Vec<Vec<String>>,
+
     /// Hooks invoked when a tool call begins execution.
     #[serde(default)]
     pub tool_call_started: Vec<Vec<String>>,
@@ -1904,6 +1912,8 @@ impl Default for HooksConfig {
             subagent_stop: Vec::new(),
             model_request_started: Vec::new(),
             model_response_completed: Vec::new(),
+            model_manual_apply: Vec::new(),
+            model_training_mode: Vec::new(),
             tool_call_started: Vec::new(),
             tool_call_finished: Vec::new(),
             command: HooksCommandConfig::default(),
