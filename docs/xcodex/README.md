@@ -27,6 +27,7 @@ xcodex (xtreme-codex) is an effort to add features to upstream Codex CLI.
 - Announcements (startup tips): `docs/xcodex/announcements.md`
 - Themes: `docs/xcodex/themes.md` (start here) and `docs/xcodex/themes-mbadolato.md` (built-in catalog details)
 - Lazy MCP loading: `docs/xcodex/lazy-mcp-loading.md`
+- Training mode for patch approvals: `docs/xcodex/training_mode.md`
 
 ## Local install (as `xcodex`)
 
