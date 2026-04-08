@@ -85,10 +85,17 @@ Supported xcodex event types (via `xcodex_event_type`):
 - `subagent-stop`
 - `model-request-started`
 - `model-response-completed`
+- `model-manual-apply`
+- `model-training-mode`
 - `tool-call-started`
 - `tool-call-finished`
 - `agent-turn-complete`
 - `approval-requested`
+
+The xcodex-only approval redirect events are emitted when the user explicitly chooses those patch-review paths in the approval UI:
+
+- `model-manual-apply`: user chose `Manual apply in editor`
+- `model-training-mode`: user chose `Training Mode`
 
 Event parity: these same event types are emitted regardless of hook mode (external, Python Host, or PyO3). Python Host wraps the payload in a JSONL object with an `event` field; the `event` value is the same payload object external hooks receive.
 
@@ -193,6 +200,7 @@ This is a quick, “everything hooks-related” cheat sheet. The canonical sourc
   - `hooks.agent_turn_complete`, `hooks.approval_requested`, `hooks.session_start`, `hooks.session_end`
   - `hooks.user_prompt_submit`, `hooks.pre_compact`, `hooks.notification`, `hooks.subagent_stop`
   - `hooks.model_request_started`, `hooks.model_response_completed`
+  - `hooks.model_manual_apply`, `hooks.model_training_mode`
   - `hooks.tool_call_started`, `hooks.tool_call_finished`
 - External (recommended matcher config):
   - `hooks.command.default_timeout_sec`
