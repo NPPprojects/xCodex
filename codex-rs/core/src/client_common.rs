@@ -22,11 +22,14 @@ use tokio::sync::mpsc;
 
 /// Review thread system prompt. Edit `core/src/review_prompt.md` to customize.
 pub const REVIEW_PROMPT: &str = include_str!("../review_prompt.md");
+pub const TRAINING_MODE_SYSTEM_PROMPT: &str = include_str!("../training_mode_system_prompt.md");
 
 // Centralized templates for review-related user messages
 pub const REVIEW_EXIT_SUCCESS_TMPL: &str = include_str!("../templates/review/exit_success.xml");
 pub const REVIEW_EXIT_INTERRUPTED_TMPL: &str =
     include_str!("../templates/review/exit_interrupted.xml");
+pub const TRAINING_MODE_REQUEST_PROMPT_TMPL: &str =
+    include_str!("../templates/training_mode/request_prompt.md");
 
 /// API request payload for a single model turn
 #[derive(Default, Debug, Clone)]

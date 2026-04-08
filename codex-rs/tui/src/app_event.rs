@@ -80,6 +80,15 @@ pub(crate) struct ManualPatchApplyRequest {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct TrainingModeRequest {
+    pub approval_id: String,
+    pub turn_id: Option<String>,
+    pub cwd: PathBuf,
+    pub changes: HashMap<PathBuf, FileChange>,
+    pub reason: Option<String>,
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(crate) enum AppEvent {
@@ -292,6 +301,9 @@ pub(crate) enum AppEvent {
 
     /// Open the configured external editor with a serialized manual patch-apply payload.
     OpenManualPatchApply(ManualPatchApplyRequest),
+
+    /// Open the configured external editor with a serialized training-mode payload.
+    OpenTrainingMode(TrainingModeRequest),
 
     /// Emitted whenever the active plan file state changes and UI surfaces should refresh.
     PlanFileUiUpdated {

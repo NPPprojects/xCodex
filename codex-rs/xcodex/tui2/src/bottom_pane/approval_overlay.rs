@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use crate::app_event::AppEvent;
 use crate::app_event::ManualPatchApplyRequest;
+use crate::app_event::TrainingModeRequest;
 use crate::app_event_sender::AppEventSender;
 use crate::bottom_pane::BottomPaneView;
 use crate::bottom_pane::CancellationEvent;
@@ -225,6 +226,22 @@ impl ApprovalOverlay {
                     reason.clone(),
                 ),
                 (
+                    ApprovalVariant::ApplyPatch {
+                        id,
+                        turn_id,
+                        cwd,
+                        changes,
+                        reason,
+                    },
+                    ApprovalDecision::TrainingMode,
+                ) => self.handle_training_mode_decision(
+                    id,
+                    turn_id.clone(),
+                    cwd.clone(),
+                    changes.clone(),
+                    reason.clone(),
+                ),
+                (
                     ApprovalVariant::McpElicitation {
                         server_name,
                         request_id,
@@ -276,6 +293,24 @@ impl ApprovalOverlay {
     ) {
         self.app_event_tx
             .send(AppEvent::OpenManualPatchApply(ManualPatchApplyRequest {
+                approval_id: id.to_string(),
+                turn_id,
+                cwd,
+                changes,
+                reason,
+            }));
+    }
+
+    fn handle_training_mode_decision(
+        &self,
+        id: &str,
+        turn_id: Option<String>,
+        cwd: PathBuf,
+        changes: HashMap<PathBuf, FileChange>,
+        reason: Option<String>,
+    ) {
+        self.app_event_tx
+            .send(AppEvent::OpenTrainingMode(TrainingModeRequest {
                 approval_id: id.to_string(),
                 turn_id,
                 cwd,
@@ -616,6 +651,7 @@ enum ApprovalVariant {
 enum ApprovalDecision {
     Review(ReviewDecision),
     ManualApply,
+    TrainingMode,
     McpElicitation(ElicitationAction),
     Exclusion(String),
 }
@@ -700,6 +736,12 @@ fn patch_options() -> Vec<ApprovalOption> {
             additional_shortcuts: vec![key_hint::plain(KeyCode::Char('m'))],
         },
         ApprovalOption {
+            label: "Training Mode".to_string(),
+            decision: ApprovalDecision::TrainingMode,
+            display_shortcut: None,
+            additional_shortcuts: vec![key_hint::plain(KeyCode::Char('t'))],
+        },
+        ApprovalOption {
             label: "No, and tell xCodex what to do differently".to_string(),
             decision: ApprovalDecision::Review(ReviewDecision::Abort),
             display_shortcut: Some(key_hint::plain(KeyCode::Esc)),
@@ -751,6 +793,7 @@ mod tests {
     use codex_core::features::Feature;
     use codex_core::themes::ThemeCatalog;
     use codex_core::themes::ThemeColor;
+    use insta::assert_snapshot;
     use pretty_assertions::assert_eq;
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -904,6 +947,27 @@ mod tests {
     }
 
     #[test]
+    fn patch_training_mode_shortcut_emits_training_mode_event() {
+        let (tx, mut rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let mut view = ApprovalOverlay::new(make_patch_request(), tx, Features::with_defaults());
+
+        view.handle_key_event(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+
+        let ev = rx.try_recv().expect("training mode event");
+        match ev {
+            AppEvent::OpenTrainingMode(request) => {
+                assert_eq!(request.approval_id, "patch-1");
+                assert_eq!(request.turn_id.as_deref(), Some("turn-1"));
+                assert_eq!(request.cwd, PathBuf::from("/repo"));
+                assert_eq!(request.reason.as_deref(), Some("reason"));
+                assert_eq!(request.changes.len(), 1);
+            }
+            other => panic!("expected OpenTrainingMode event, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn exec_prefix_option_hidden_when_execpolicy_disabled() {
         let (tx, mut rx) = unbounded_channel::<AppEvent>();
         let tx = AppEventSender::new(tx);
@@ -1014,6 +1078,29 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("echo hello world")),
             "expected header to include command snippet, got {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn patch_approval_snapshot_includes_training_mode_option() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx);
+        let view = ApprovalOverlay::new(make_patch_request(), tx, Features::with_defaults());
+        let labels = view
+            .options
+            .iter()
+            .map(|option| option.label.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_snapshot!(
+            "patch_approval_training_mode",
+            labels,
+            @"Yes, proceed
+Yes, and don't ask again for these files
+Manual apply in editor
+Training Mode
+No, and tell xCodex what to do differently"
         );
     }
 

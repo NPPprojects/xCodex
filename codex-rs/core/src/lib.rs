@@ -178,6 +178,8 @@ pub use client_common::Prompt;
 pub use client_common::REVIEW_PROMPT;
 pub use client_common::ResponseEvent;
 pub use client_common::ResponseStream;
+pub use client_common::TRAINING_MODE_REQUEST_PROMPT_TMPL;
+pub use client_common::TRAINING_MODE_SYSTEM_PROMPT;
 pub use codex_protocol::models::ContentItem;
 pub use codex_protocol::models::LocalShellAction;
 pub use codex_protocol::models::LocalShellExecAction;

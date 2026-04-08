@@ -2,6 +2,7 @@ use crate::app_backtrack::BacktrackState;
 use crate::app_event::AppEvent;
 use crate::app_event::ExitMode;
 use crate::app_event::ManualPatchApplyRequest;
+use crate::app_event::TrainingModeRequest;
 #[cfg(target_os = "windows")]
 use crate::app_event::WindowsSandboxEnableMode;
 #[cfg(target_os = "windows")]
@@ -40,6 +41,7 @@ use codex_core::ThreadManager;
 use codex_core::config::Config;
 use codex_core::config::ConfigBuilder;
 use codex_core::config::ConfigOverrides;
+use codex_core::config::Constrained;
 use codex_core::config::edit::ConfigEdit;
 use codex_core::config::edit::ConfigEditsBuilder;
 use codex_core::config_loader::ConfigLayerStackOrdering;
@@ -65,6 +67,7 @@ use codex_otel::OtelManager;
 use codex_otel::TelemetryAuthMode;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::Personality;
+use codex_protocol::config_types::WebSearchMode;
 #[cfg(target_os = "windows")]
 use codex_protocol::config_types::WindowsSandboxLevel;
 use codex_protocol::items::TurnItem;
@@ -72,6 +75,7 @@ use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelUpgrade;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::SessionConfiguredEvent;
+use codex_protocol::user_input::UserInput;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use color_eyre::eyre::Result;
 use color_eyre::eyre::WrapErr;
@@ -152,6 +156,71 @@ struct ManualPatchApplyResult {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum ManualPatchApplyStatus {
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct TrainingModePayload {
+    schema_version: u32,
+    kind: String,
+    approval_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    turn_id: Option<String>,
+    cwd: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    changes: Vec<ManualPatchApplyPayloadChange>,
+    training: TrainingModeArtifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+struct TrainingModeArtifact {
+    format: String,
+    summary: String,
+    items: Vec<TrainingModeArtifactItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+struct TrainingModeArtifactItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<PathBuf>,
+    #[serde(default)]
+    intent: String,
+    #[serde(default)]
+    pseudocode: Vec<String>,
+    #[serde(default)]
+    hints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+struct TrainingModeHelperOutput {
+    #[serde(default)]
+    format: Option<String>,
+    #[serde(default)]
+    summary: String,
+    #[serde(default)]
+    items: Vec<TrainingModeArtifactItem>,
+    #[serde(default)]
+    raw_text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+struct TrainingModeResult {
+    schema_version: u32,
+    kind: String,
+    approval_id: String,
+    status: TrainingModeStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TrainingModeStatus {
     Completed,
     Cancelled,
     Failed,
@@ -621,6 +690,7 @@ pub(crate) struct App {
     primary_session_configured: Option<SessionConfiguredEvent>,
     pending_primary_events: VecDeque<Event>,
     pending_manual_patch_apply: HashMap<String, PathBuf>,
+    pending_training_mode: HashMap<String, PathBuf>,
 }
 
 #[derive(Default)]
@@ -1226,6 +1296,7 @@ impl App {
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
             pending_manual_patch_apply: HashMap::new(),
+            pending_training_mode: HashMap::new(),
         };
 
         // On startup, if Agent mode (workspace-write) or ReadOnly is active, warn about world-writable dirs on Windows.
@@ -1891,6 +1962,9 @@ impl App {
             }
             AppEvent::OpenManualPatchApply(request) => {
                 self.handle_open_manual_patch_apply(tui, request).await;
+            }
+            AppEvent::OpenTrainingMode(request) => {
+                self.handle_open_training_mode(tui, request).await;
             }
             AppEvent::OpenWindowsSandboxEnablePrompt { preset } => {
                 self.chat_widget.open_windows_sandbox_enable_prompt(preset);
@@ -3191,20 +3265,19 @@ impl App {
         }
     }
 
-    fn manual_patch_apply_payload(
-        request: &ManualPatchApplyRequest,
-        thread_id: Option<ThreadId>,
-    ) -> ManualPatchApplyPayload {
-        let mut changes: Vec<_> = request.changes.iter().collect();
+    fn patch_payload_changes(
+        cwd: &Path,
+        changes: &HashMap<PathBuf, FileChange>,
+    ) -> Vec<ManualPatchApplyPayloadChange> {
+        let mut changes: Vec<_> = changes.iter().collect();
         changes.sort_by(|(left_path, _), (right_path, _)| {
-            Self::absolutize_path(&request.cwd, left_path)
-                .cmp(&Self::absolutize_path(&request.cwd, right_path))
+            Self::absolutize_path(cwd, left_path).cmp(&Self::absolutize_path(cwd, right_path))
         });
 
-        let changes = changes
+        changes
             .into_iter()
             .map(|(path, change)| {
-                let path = Self::absolutize_path(&request.cwd, path);
+                let path = Self::absolutize_path(cwd, path);
                 match change {
                     FileChange::Add { content } => ManualPatchApplyPayloadChange {
                         path,
@@ -3226,13 +3299,18 @@ impl App {
                         kind: "update",
                         move_path: move_path
                             .as_ref()
-                            .map(|move_path| Self::absolutize_path(&request.cwd, move_path)),
+                            .map(|move_path| Self::absolutize_path(cwd, move_path)),
                         diff: unified_diff.clone(),
                     },
                 }
             })
-            .collect();
+            .collect()
+    }
 
+    fn manual_patch_apply_payload(
+        request: &ManualPatchApplyRequest,
+        thread_id: Option<ThreadId>,
+    ) -> ManualPatchApplyPayload {
         ManualPatchApplyPayload {
             schema_version: 1,
             kind: "manual_patch_apply_request".to_string(),
@@ -3241,8 +3319,264 @@ impl App {
             turn_id: request.turn_id.clone(),
             cwd: request.cwd.clone(),
             reason: request.reason.clone(),
-            changes,
+            changes: Self::patch_payload_changes(&request.cwd, &request.changes),
         }
+    }
+
+    fn training_mode_prompt(request: &TrainingModeRequest) -> std::result::Result<String, String> {
+        let changes = Self::patch_payload_changes(&request.cwd, &request.changes);
+        let serialized_changes = serde_json::to_string_pretty(&changes)
+            .map_err(|err| format!("Failed to serialize training-mode changes: {err}"))?;
+        let reason = request.reason.as_deref().unwrap_or("No reason provided.");
+        let cwd = request.cwd.display();
+
+        Ok(codex_core::TRAINING_MODE_REQUEST_PROMPT_TMPL
+            .replace("{cwd}", &cwd.to_string())
+            .replace("{reason}", reason)
+            .replace("{serialized_changes}", &serialized_changes))
+    }
+
+    fn training_mode_output_schema() -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["format", "summary", "raw_text", "items"],
+            "properties": {
+                "format": {
+                    "type": ["string", "null"]
+                },
+                "summary": { "type": "string" },
+                "raw_text": {
+                    "type": ["string", "null"]
+                },
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["path", "intent", "pseudocode", "hints"],
+                        "properties": {
+                            "path": {
+                                "type": ["string", "null"]
+                            },
+                            "intent": { "type": "string" },
+                            "pseudocode": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            },
+                            "hints": {
+                                "type": "array",
+                                "items": { "type": "string" }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    fn normalize_training_mode_output(
+        request: &TrainingModeRequest,
+        output: TrainingModeHelperOutput,
+        raw_text: Option<String>,
+    ) -> TrainingModeArtifact {
+        let items = output
+            .items
+            .into_iter()
+            .map(|mut item| {
+                item.path = item
+                    .path
+                    .as_ref()
+                    .map(|path| Self::absolutize_path(&request.cwd, path));
+                item
+            })
+            .collect();
+
+        TrainingModeArtifact {
+            format: output
+                .format
+                .unwrap_or_else(|| "structured_hints_v1".to_string()),
+            summary: output.summary,
+            items,
+            raw_text: output.raw_text.or(raw_text),
+        }
+    }
+
+    fn parse_training_mode_output(
+        request: &TrainingModeRequest,
+        raw_text: &str,
+    ) -> TrainingModeArtifact {
+        let parsed = serde_json::from_str::<TrainingModeHelperOutput>(raw_text).or_else(|_| {
+            if let (Some(start), Some(end)) = (raw_text.find('{'), raw_text.rfind('}'))
+                && start < end
+                && let Some(slice) = raw_text.get(start..=end)
+            {
+                serde_json::from_str::<TrainingModeHelperOutput>(slice)
+            } else {
+                Err(serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "training-mode output did not contain parseable JSON",
+                )))
+            }
+        });
+
+        match parsed {
+            Ok(output) => Self::normalize_training_mode_output(request, output, None),
+            Err(_) => TrainingModeArtifact {
+                format: "structured_hints_v1".to_string(),
+                summary: "Training artifact generated from raw helper output.".to_string(),
+                items: Vec::new(),
+                raw_text: Some(raw_text.to_string()),
+            },
+        }
+    }
+
+    async fn generate_training_mode_artifact(
+        &self,
+        request: &TrainingModeRequest,
+    ) -> std::result::Result<TrainingModeArtifact, String> {
+        let mut helper_config = self.config.clone();
+        helper_config.base_instructions = Some(codex_core::TRAINING_MODE_SYSTEM_PROMPT.to_string());
+        helper_config.model = Some(self.chat_widget.current_model().to_string());
+        helper_config.cwd = request.cwd.clone();
+        helper_config.permissions.approval_policy = Constrained::allow_only(AskForApproval::Never);
+        helper_config.permissions.sandbox_policy =
+            Constrained::allow_only(SandboxPolicy::new_read_only_policy());
+        helper_config.web_search_mode = Constrained::allow_only(WebSearchMode::Disabled);
+
+        let prompt = Self::training_mode_prompt(request)?;
+        let new_thread = self
+            .server
+            .start_thread(helper_config)
+            .await
+            .map_err(|err| format!("Failed to start training-mode helper thread: {err}"))?;
+        let thread_id = new_thread.thread_id;
+        let thread = new_thread.thread;
+
+        let submit_result = thread
+            .submit(Op::UserTurn {
+                items: vec![UserInput::Text {
+                    text: prompt,
+                    text_elements: Vec::new(),
+                }],
+                cwd: request.cwd.clone(),
+                approval_policy: AskForApproval::Never,
+                sandbox_policy: SandboxPolicy::new_read_only_policy(),
+                model: self.chat_widget.current_model().to_string(),
+                effort: self.chat_widget.effective_reasoning_effort(),
+                summary: self.config.model_reasoning_summary,
+                final_output_json_schema: Some(Self::training_mode_output_schema()),
+                collaboration_mode: None,
+                personality: None,
+            })
+            .await;
+        if let Err(err) = submit_result {
+            let _ = thread.submit(Op::Shutdown).await;
+            self.server.remove_thread(&thread_id).await;
+            return Err(format!(
+                "Failed to submit training-mode helper prompt: {err}"
+            ));
+        }
+
+        let result = loop {
+            match thread.next_event().await {
+                Ok(event) => match event.msg {
+                    EventMsg::TurnComplete(ev) => {
+                        let raw_text = ev.last_agent_message.unwrap_or_default();
+                        break Ok(Self::parse_training_mode_output(request, &raw_text));
+                    }
+                    EventMsg::TurnAborted(ev) => {
+                        break Err(format!(
+                            "Training-mode helper turn was aborted: {:?}",
+                            ev.reason
+                        ));
+                    }
+                    EventMsg::Error(ev) => {
+                        break Err(format!("Training-mode helper failed: {}", ev.message));
+                    }
+                    _ => {}
+                },
+                Err(err) => {
+                    break Err(format!(
+                        "Training-mode helper thread ended before producing output: {err}"
+                    ));
+                }
+            }
+        };
+
+        let _ = thread.submit(Op::Shutdown).await;
+        self.server.remove_thread(&thread_id).await;
+        result
+    }
+
+    fn training_mode_payload(
+        request: &TrainingModeRequest,
+        thread_id: Option<ThreadId>,
+        training: TrainingModeArtifact,
+    ) -> TrainingModePayload {
+        TrainingModePayload {
+            schema_version: 1,
+            kind: "training_mode_request".to_string(),
+            approval_id: request.approval_id.clone(),
+            thread_id: thread_id.map(|thread_id| thread_id.to_string()),
+            turn_id: request.turn_id.clone(),
+            cwd: request.cwd.clone(),
+            reason: request.reason.clone(),
+            changes: Self::patch_payload_changes(&request.cwd, &request.changes),
+            training,
+        }
+    }
+
+    fn write_training_mode_payload(
+        payload: &TrainingModePayload,
+    ) -> std::result::Result<PathBuf, String> {
+        let file = TempFileBuilder::new()
+            .prefix("xcodex-training-mode-")
+            .suffix(".json")
+            .tempfile()
+            .map_err(|err| format!("Failed to create training-mode payload file: {err}"))?;
+        serde_json::to_writer_pretty(file.as_file(), payload)
+            .map_err(|err| format!("Failed to write training-mode payload file: {err}"))?;
+        let (_, path) = file.keep().map_err(|err| {
+            format!(
+                "Failed to persist training-mode payload file: {}",
+                err.error
+            )
+        })?;
+        Ok(path)
+    }
+
+    fn training_mode_result_path(payload_path: &Path) -> PathBuf {
+        payload_path.with_extension("result.json")
+    }
+
+    fn read_training_mode_result(
+        path: &Path,
+        expected_approval_id: &str,
+    ) -> std::result::Result<TrainingModeResult, String> {
+        let content = std::fs::read_to_string(path).map_err(|err| {
+            let path_display = path.display();
+            format!("Failed to read training-mode result file {path_display}: {err}")
+        })?;
+        let result: TrainingModeResult = serde_json::from_str(&content).map_err(|err| {
+            let path_display = path.display();
+            format!("Failed to parse training-mode result file {path_display}: {err}")
+        })?;
+        if result.kind != "training_mode_result" {
+            let path_display = path.display();
+            return Err(format!(
+                "Invalid training-mode result kind in {path_display}: {}",
+                result.kind
+            ));
+        }
+        if result.approval_id != expected_approval_id {
+            let path_display = path.display();
+            return Err(format!(
+                "Training-mode result file {path_display} reported approval {} but expected {expected_approval_id}",
+                result.approval_id
+            ));
+        }
+        Ok(result)
     }
 
     fn write_manual_patch_apply_payload(
@@ -3400,6 +3734,131 @@ impl App {
             .is_none()
         {
             tracing::warn!("manual patch apply approval already resolved: {approval_id}");
+            tui.frame_requester().schedule_frame();
+            return;
+        }
+        self.chat_widget.submit_op(Op::PatchApproval {
+            id: approval_id,
+            decision,
+        });
+        tui.frame_requester().schedule_frame();
+    }
+
+    async fn handle_open_training_mode(
+        &mut self,
+        tui: &mut tui::Tui,
+        request: TrainingModeRequest,
+    ) {
+        let approval_id = request.approval_id.clone();
+        let training = match self.generate_training_mode_artifact(&request).await {
+            Ok(training) => training,
+            Err(err) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_error_event(err));
+                self.chat_widget.submit_op(Op::PatchApproval {
+                    id: approval_id,
+                    decision: ReviewDecision::Abort,
+                });
+                tui.frame_requester().schedule_frame();
+                return;
+            }
+        };
+
+        let payload = Self::training_mode_payload(&request, self.chat_widget.thread_id(), training);
+        let payload_path = match Self::write_training_mode_payload(&payload) {
+            Ok(path) => path,
+            Err(err) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_error_event(err));
+                self.chat_widget.submit_op(Op::PatchApproval {
+                    id: approval_id,
+                    decision: ReviewDecision::Abort,
+                });
+                tui.frame_requester().schedule_frame();
+                return;
+            }
+        };
+        let result_path = Self::training_mode_result_path(&payload_path);
+        match std::fs::remove_file(&result_path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_error_event(format!(
+                        "Failed to prepare training-mode result file {}: {err}",
+                        result_path.display()
+                    )));
+                self.chat_widget.submit_op(Op::PatchApproval {
+                    id: approval_id,
+                    decision: ReviewDecision::Abort,
+                });
+                tui.frame_requester().schedule_frame();
+                return;
+            }
+        }
+        if let Some(previous_path) = self
+            .pending_training_mode
+            .insert(approval_id.clone(), result_path.clone())
+        {
+            tracing::warn!(
+                previous_path = %previous_path.display(),
+                "overwriting pending training-mode state for approval_id={approval_id}"
+            );
+        }
+
+        let decision = match self
+            .launch_external_editor_for_path(tui, &payload_path)
+            .await
+        {
+            Ok(()) => match Self::read_training_mode_result(&result_path, &approval_id) {
+                Ok(result) => match result.status {
+                    TrainingModeStatus::Completed => {
+                        self.chat_widget.add_to_history(history_cell::new_info_event(
+                            "Training mode completed in external editor.".to_string(),
+                            Some(format!(
+                                "Resuming turn without rerunning apply_patch. Payload saved at {}",
+                                payload_path.display()
+                            )),
+                        ));
+                        ReviewDecision::ExternallyApplied
+                    }
+                    TrainingModeStatus::Cancelled => {
+                        self.chat_widget
+                            .add_to_history(history_cell::new_info_event(
+                                "Training mode was cancelled. The turn was interrupted."
+                                    .to_string(),
+                                Some(format!("Result file: {}", result_path.display())),
+                            ));
+                        ReviewDecision::Abort
+                    }
+                    TrainingModeStatus::Failed => {
+                        self.chat_widget
+                            .add_to_history(history_cell::new_error_event(format!(
+                                "Training mode failed. The turn was interrupted. Result file: {}",
+                                result_path.display()
+                            )));
+                        ReviewDecision::Abort
+                    }
+                },
+                Err(err) => {
+                    self.chat_widget
+                        .add_to_history(history_cell::new_error_event(format!(
+                            "{err} Training mode was not completed, so the turn was interrupted."
+                        )));
+                    ReviewDecision::Abort
+                }
+            },
+            Err(err) => {
+                self.chat_widget
+                    .add_to_history(history_cell::new_error_event(format!(
+                        "{err} Training mode was not completed."
+                    )));
+                ReviewDecision::Abort
+            }
+        };
+
+        if self.pending_training_mode.remove(&approval_id).is_none() {
+            tracing::warn!("training-mode approval already resolved: {approval_id}");
             tui.frame_requester().schedule_frame();
             return;
         }
@@ -3698,6 +4157,7 @@ mod tests {
             primary_session_configured: None,
             pending_primary_events: VecDeque::new(),
             pending_manual_patch_apply: HashMap::new(),
+            pending_training_mode: HashMap::new(),
         }
     }
 
@@ -3761,6 +4221,7 @@ mod tests {
                 primary_session_configured: None,
                 pending_primary_events: VecDeque::new(),
                 pending_manual_patch_apply: HashMap::new(),
+                pending_training_mode: HashMap::new(),
             },
             rx,
             op_rx,
@@ -3812,6 +4273,147 @@ mod tests {
         let err = App::read_manual_patch_apply_result(&path, "call-1").expect_err("mismatch");
 
         assert!(err.contains("expected call-1"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_training_mode_output_parses_structured_json() {
+        let request = TrainingModeRequest {
+            approval_id: "call-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            cwd: PathBuf::from("/repo"),
+            changes: HashMap::from([(
+                PathBuf::from("src/main.rs"),
+                FileChange::Update {
+                    unified_diff: "@@ -1 +1 @@\n-old\n+new".to_string(),
+                    move_path: None,
+                },
+            )]),
+            reason: Some("reason".to_string()),
+        };
+
+        let artifact = App::parse_training_mode_output(
+            &request,
+            r#"{
+                "format":"structured_hints_v1",
+                "summary":"Understand the rename and follow-up call order.",
+                "items":[
+                    {
+                        "path":"src/main.rs",
+                        "intent":"Rename the method and update callers.",
+                        "pseudocode":["rename foo to bar","update the call site"],
+                        "hints":["start with the declaration","then fix compile errors"]
+                    }
+                ]
+            }"#,
+        );
+
+        assert_eq!(
+            artifact,
+            TrainingModeArtifact {
+                format: "structured_hints_v1".to_string(),
+                summary: "Understand the rename and follow-up call order.".to_string(),
+                items: vec![TrainingModeArtifactItem {
+                    path: Some(PathBuf::from("/repo/src/main.rs")),
+                    intent: "Rename the method and update callers.".to_string(),
+                    pseudocode: vec![
+                        "rename foo to bar".to_string(),
+                        "update the call site".to_string()
+                    ],
+                    hints: vec![
+                        "start with the declaration".to_string(),
+                        "then fix compile errors".to_string()
+                    ],
+                }],
+                raw_text: None,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_training_mode_output_falls_back_to_raw_text() {
+        let request = TrainingModeRequest {
+            approval_id: "call-1".to_string(),
+            turn_id: None,
+            cwd: PathBuf::from("/repo"),
+            changes: HashMap::new(),
+            reason: None,
+        };
+
+        let artifact = App::parse_training_mode_output(
+            &request,
+            "Here is a free-form explanation that is not valid JSON.",
+        );
+
+        assert_eq!(
+            artifact,
+            TrainingModeArtifact {
+                format: "structured_hints_v1".to_string(),
+                summary: "Training artifact generated from raw helper output.".to_string(),
+                items: Vec::new(),
+                raw_text: Some(
+                    "Here is a free-form explanation that is not valid JSON.".to_string()
+                ),
+            }
+        );
+    }
+
+    #[test]
+    fn training_mode_payload_preserves_patch_and_training_artifact() {
+        let request = TrainingModeRequest {
+            approval_id: "call-1".to_string(),
+            turn_id: Some("turn-1".to_string()),
+            cwd: PathBuf::from("/repo"),
+            changes: HashMap::from([(
+                PathBuf::from("src/main.rs"),
+                FileChange::Add {
+                    content: "fn main() {}\n".to_string(),
+                },
+            )]),
+            reason: Some("reason".to_string()),
+        };
+        let training = TrainingModeArtifact {
+            format: "structured_hints_v1".to_string(),
+            summary: "Learn the new file structure.".to_string(),
+            items: vec![TrainingModeArtifactItem {
+                path: Some(PathBuf::from("/repo/src/main.rs")),
+                intent: "Create the entrypoint file.".to_string(),
+                pseudocode: vec!["write main".to_string()],
+                hints: vec!["keep it minimal".to_string()],
+            }],
+            raw_text: None,
+        };
+
+        let payload = App::training_mode_payload(&request, Some(ThreadId::new()), training.clone());
+
+        assert_eq!(payload.schema_version, 1);
+        assert_eq!(payload.kind, "training_mode_request");
+        assert_eq!(payload.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(payload.changes.len(), 1);
+        assert_eq!(payload.changes[0].path, PathBuf::from("/repo/src/main.rs"));
+        assert_eq!(payload.training, training);
+    }
+
+    #[test]
+    fn read_training_mode_result_parses_completed_status() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("training-mode.result.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"kind":"training_mode_result","approval_id":"call-1","status":"completed"}"#,
+        )
+        .expect("write result");
+
+        let result = App::read_training_mode_result(&path, "call-1").expect("parse result");
+
+        assert_eq!(
+            result,
+            TrainingModeResult {
+                schema_version: 1,
+                kind: "training_mode_result".to_string(),
+                approval_id: "call-1".to_string(),
+                status: TrainingModeStatus::Completed,
+            }
+        );
     }
 
     fn test_otel_manager(config: &Config, model: &str) -> OtelManager {
