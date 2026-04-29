@@ -1,3 +1,11 @@
+# This project is archived.
+
+- Originally I forked this repo with the intent of building a notification system within my Arch config. 
+- The idea was to keep track of Codex CLI agent status, and the fork by  Eriz1818/xCodex was the only available fork, that had decent hook support. As of writing this 29/04/2026, Codex CLI upstream still has poor hook support. In addition both this fork and its upstream is vastly behind the Codex Cli upstream, and model access is limited to gpt 5.4 variants and lower. 
+- For better long term support, I've migrated all my systems to OpenCode, where I run an easy to maintain fork.
+
+
+
 # xCodex (xtreme-Codex)
 
 `xCodex` (short for “xtreme-Codex”) is an independent fork of OpenAI’s Codex CLI.
